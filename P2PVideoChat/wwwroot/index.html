@@ -1,0 +1,33 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat Room</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+</head>
+<body>
+    <h2>Chat Room</h2>
+    <input id="userInput" placeholder="Name" />
+    <input id="messageInput" placeholder="Message" />
+    <button onclick="sendMessage()">Send</button>
+    <ul id="messagesList"></ul>
+
+    <script>
+            const connection = new signalR.HubConnectionBuilder()
+              .withUrl("/chathub").build();
+
+            connection.on("ReceiveMessage", (user, msg) => {
+              const li = document.createElement("li");
+              li.textContent = `${user}: ${msg}`;
+              document.getElementById("messagesList").appendChild(li);
+            });
+
+            connection.start();
+
+            function sendMessage() {
+              const user = userInput.value;
+              const msg = messageInput.value;
+              connection.invoke("SendMessage", user, msg);
+            }
+    </script>
+</body>
+</html>
