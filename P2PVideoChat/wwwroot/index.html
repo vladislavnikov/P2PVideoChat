@@ -6,28 +6,75 @@
 </head>
 <body>
     <h2>Chat Room</h2>
-    <input id="userInput" placeholder="Name" />
-    <input id="messageInput" placeholder="Message" />
-    <button onclick="sendMessage()">Send</button>
+
+    <div id="joinSection">
+        <input id="nameInput" placeholder="Your name" />
+        <input id="roomInput" placeholder="Room name" />
+        <button onclick="joinRoom()">Join</button>
+    </div>
+
+    <div id="chatSection" style="display:none">
+        <p>Room: <strong id="roomLabel"></strong> &middot; You: <strong id="nameLabel"></strong></p>
+        <input id="messageInput" placeholder="Message" />
+        <button onclick="sendMessage()">Send</button>
+    </div>
+
     <ul id="messagesList"></ul>
 
     <script>
-            const connection = new signalR.HubConnectionBuilder()
-              .withUrl("/chathub").build();
+        const connection = new signalR.HubConnectionBuilder()
+            .withUrl("/chathub")
+            .withAutomaticReconnect()
+            .build();
 
-            connection.on("ReceiveMessage", (user, msg) => {
-              const li = document.createElement("li");
-              li.textContent = `${user}: ${msg}`;
-              document.getElementById("messagesList").appendChild(li);
-            });
+        function addLine(text) {
+            const li = document.createElement("li");
+            li.textContent = text;
+            document.getElementById("messagesList").appendChild(li);
+        }
 
-            connection.start();
+        connection.on("ReceiveMessage", (user, msg) => addLine(`${user}: ${msg}`));
+        connection.on("SystemMessage", msg => addLine(`* ${msg}`));
+        connection.on("RoomFull", room => alert(`Room "${room}" is full (max 2 people).`));
 
-            function sendMessage() {
-              const user = userInput.value;
-              const msg = messageInput.value;
-              connection.invoke("SendMessage", user, msg);
+        const started = connection.start();
+
+        let currentRoom = null;
+        let currentUser = null;
+
+        try { nameInput.value = localStorage.getItem("chatUserName") || ""; } catch {}
+
+        async function joinRoom() {
+            const room = roomInput.value.trim();
+            const name = nameInput.value.trim();
+            if (!room || !name) return;
+
+            await started;
+            const joined = await connection.invoke("JoinRoom", room, name);
+            if (joined) {
+                currentRoom = room;
+                currentUser = name;
+                try { localStorage.setItem("chatUserName", name); } catch {}
+                roomLabel.textContent = room;
+                nameLabel.textContent = name;
+                joinSection.style.display = "none";
+                chatSection.style.display = "";
             }
+        }
+
+        connection.onreconnected(async () => {
+            if (currentRoom) {
+                const ok = await connection.invoke("JoinRoom", currentRoom, currentUser);
+                if (!ok) addLine("* Could not rejoin the room.");
+            }
+        });
+
+        function sendMessage() {
+            const msg = messageInput.value;
+            if (!msg) return;
+            connection.invoke("SendMessage", msg);
+            messageInput.value = "";
+        }
     </script>
 </body>
 </html>
