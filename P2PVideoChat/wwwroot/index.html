@@ -3,6 +3,10 @@
 <head>
     <title>Chat Room</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <style>
+        #videos { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+        #videos video { width: 320px; max-width: 100%; background: #000; }
+    </style>
 </head>
 <body>
     <h2>Chat Room</h2>
@@ -15,6 +19,10 @@
 
     <div id="chatSection" style="display:none">
         <p>Room: <strong id="roomLabel"></strong> &middot; You: <strong id="nameLabel"></strong></p>
+        <div id="videos">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <video id="remoteVideo" autoplay playsinline></video>
+        </div>
         <input id="messageInput" placeholder="Message" />
         <button onclick="sendMessage()">Send</button>
     </div>
@@ -33,9 +41,67 @@
             document.getElementById("messagesList").appendChild(li);
         }
 
-        connection.on("ReceiveMessage", (user, msg) => addLine(`${user}: ${msg}`));
-        connection.on("SystemMessage", msg => addLine(`* ${msg}`));
+        connection.on("ReceiveMessage", (user, msg) => {
+            if (msg.startsWith(SIGNAL_PREFIX)) handleSignal(msg.slice(SIGNAL_PREFIX.length));
+            else addLine(`${user}: ${msg}`);
+        });
+        connection.on("SystemMessage", msg => {
+            addLine(`* ${msg}`);
+            if (msg.endsWith(" left")) closePeer();
+        });
         connection.on("RoomFull", room => alert(`Room "${room}" is full (max 2 people).`));
+
+        
+        const SIGNAL_PREFIX = "__rtc__:";
+        const myId = Math.random().toString(36).slice(2); 
+
+        let localStream = null;
+        let pc = null;
+
+        function signal(type, data) {
+            return connection.invoke("SendMessage", SIGNAL_PREFIX + JSON.stringify({ from: myId, type, data }));
+        }
+
+        function closePeer() {
+            if (pc) pc.close();
+            pc = null;
+            remoteVideo.srcObject = null;
+        }
+
+        function createPeer() {
+            closePeer();
+            pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+            localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+            pc.onicecandidate = e => { if (e.candidate) signal("candidate", e.candidate); };
+            pc.ontrack = e => { remoteVideo.srcObject = e.streams[0]; };
+            pc.onconnectionstatechange = () => addLine(`* Call ${pc.connectionState}`);
+        }
+
+        let signalQueue = Promise.resolve();
+        function handleSignal(json) {
+            signalQueue = signalQueue.then(() => processSignal(json)).catch(err => console.warn(err));
+        }
+
+        async function processSignal(json) {
+            const { from, type, data } = JSON.parse(json);
+            if (from === myId || !localStream) return; 
+
+            if (type === "hello") {
+                if (pc?.connectionState === "connected") return;
+                createPeer();
+                await pc.setLocalDescription();
+                signal("offer", pc.localDescription);
+            } else if (type === "offer") {
+                createPeer();
+                await pc.setRemoteDescription(data);
+                await pc.setLocalDescription();
+                signal("answer", pc.localDescription);
+            } else if (type === "answer") {
+                if (pc?.signalingState === "have-local-offer") await pc.setRemoteDescription(data);
+            } else if (type === "candidate") {
+                if (pc?.remoteDescription) await pc.addIceCandidate(data);
+            }
+        }
 
         const started = connection.start();
 
@@ -49,6 +115,17 @@
             const name = nameInput.value.trim();
             if (!room || !name) return;
 
+            try {
+                if (!localStream) {
+                    if (!navigator.mediaDevices) throw new Error("camera access needs HTTPS or localhost");
+                    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    localVideo.srcObject = localStream;
+                }
+            } catch (err) {
+                alert(`Could not access camera/microphone: ${err.message}`);
+                return;
+            }
+
             await started;
             const joined = await connection.invoke("JoinRoom", room, name);
             if (joined) {
@@ -59,13 +136,18 @@
                 nameLabel.textContent = name;
                 joinSection.style.display = "none";
                 chatSection.style.display = "";
+                signal("hello");
+            } else {
+                localStream.getTracks().forEach(t => t.stop()); 
+                localStream = null;
             }
         }
 
         connection.onreconnected(async () => {
             if (currentRoom) {
                 const ok = await connection.invoke("JoinRoom", currentRoom, currentUser);
-                if (!ok) addLine("* Could not rejoin the room.");
+                if (ok) signal("hello");
+                else addLine("* Could not rejoin the room.");
             }
         });
 
